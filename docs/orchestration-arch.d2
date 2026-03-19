@@ -1,0 +1,68 @@
+direction: down
+
+actors: ACTORS -- Who writes instructions {
+  philip: Philip {
+    shape: person
+  }
+  webchat: Claude Web Chat
+  future: Future Think Tank Agents
+}
+
+trusted: TRUSTED -- Cloudflare Edge {
+  api: API Layer\nINSERT + SELECT only\nNo UPDATE / No DELETE {
+    shape: hexagon
+  }
+
+  d1: D1 Event Log\nAppend-only\nHash-chained\nSOURCE OF TRUTH {
+    shape: cylinder
+  }
+
+  sync: Post-Write Sync\nMirrors each event into Notion
+
+  verifier: Integrity Verifier\nCron every 5 min\nD1 vs Notion check
+
+  api -> d1: INSERT
+  d1 -> sync: on write
+  verifier -> d1: compares {
+    style.stroke-dash: 3
+  }
+}
+
+visibility: VISIBILITY -- Notion Dashboard {
+  mirror: Notion Mirror Database\nCopy of every event\nPhilip + Claude read here {
+    shape: page
+  }
+
+  alert: Discrepancy Alert\nAuto-created if D1 != Notion\nVisible immediately {
+    style.stroke: "#d93025"
+  }
+}
+
+execution: EXECUTION -- CCode VM (untrusted) {
+  watcher: Watcher Script\nPolls API every 30s\nsystemd auto-restart
+
+  ccode: Claude Code\nclaude -p "instruction"\nHeadless execution
+
+  watcher -> ccode: instruction
+  ccode -> watcher: result
+}
+
+# Cross-plane connections
+actors.philip -> trusted.api: POST /events
+actors.webchat -> trusted.api: POST /events
+actors.future -> trusted.api: POST /events
+
+trusted.sync -> visibility.mirror: mirror entry
+trusted.verifier -> visibility.mirror: compares {
+  style.stroke-dash: 3
+}
+trusted.verifier -> visibility.alert: if mismatch {
+  style.stroke-dash: 3
+}
+
+execution.watcher -> trusted.api: GET pending
+execution.ccode -> trusted.api: POST result
+
+actors.webchat -> visibility.mirror: reads via MCP {
+  style.stroke-dash: 3
+}

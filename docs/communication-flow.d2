@@ -1,0 +1,29 @@
+shape: sequence_diagram
+
+Philip
+Claude Web Chat
+Cloudflare API
+CCode VM
+
+Philip -> Claude Web Chat: 1. "Create the repo" {
+  style.stroke-dash: 3
+}
+Claude Web Chat -> Cloudflare API: 2. POST /events (instruction)
+Cloudflare API.": 3. Hash chain + INSERT D1 + Sync to Notion" {
+  style.stroke: "#3fb950"
+}
+CCode VM -> Cloudflare API: 4. GET /events?status=pending
+Cloudflare API -> CCode VM: 5. instruction payload
+CCode VM.": 6. claude -p executes (git, npm, etc)" {
+  style.stroke: "#f0883e"
+}
+CCode VM -> Cloudflare API: 7. POST /events (result)
+Cloudflare API.": 8. INSERT D1 + Sync to Notion" {
+  style.stroke: "#3fb950"
+}
+Claude Web Chat -> Cloudflare API: 9. Reads result from Notion mirror {
+  style.stroke-dash: 3
+}
+Claude Web Chat -> Philip: 10. "Done -- repo at github.com/..." {
+  style.stroke-dash: 3
+}
