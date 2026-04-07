@@ -6,3 +6,7 @@ pages_build_output_dir = "./dist"
 binding = "DB"
 database_name = "sre-of-me-db"
 database_id = "8c93200e-c8a0-40c7-acba-e87f15c36ccd"
+
+[[r2_buckets]]
+binding = "CCODE_AUDIT"
+bucket_name = "ccode-audit-prod"

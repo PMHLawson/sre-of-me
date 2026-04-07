@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "atlassian-rovo": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote@latest",
+        "https://mcp.atlassian.com/v1/mcp",
+        "--transport",
+        "http-first",
+        "--header",
+        "Authorization: Basic ${ATLASSIAN_MCP_BASIC_AUTH}"
+      ]
+    }
+  }
+}

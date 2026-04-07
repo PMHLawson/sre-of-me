@@ -1,0 +1,18 @@
+name = "sre-of-me-orchestrator"
+main = "src/index.js"
+compatibility_date = "2024-12-01"
+
+# Mode 1: Deliberation polling cron (wired in Story 3)
+# Uncomment when deliberation orchestration is ready:
+# [triggers]
+# crons = ["*/30 * * * *"]
+
+[[kv_namespaces]]
+binding = "ORCHESTRATION_STATE"
+id = "959b106eed3c45a4b2387e2465cc09d2"
+preview_id = "edfefa390ffb4191b358a22f89b017ad"
+
+[vars]
+JIRA_BASE_URL = "https://pmhlawson.atlassian.net"
+JIRA_PROJECT_KEY = "SOMC"
+NOTION_DELIBERATION_DATABASE_ID = "6cc6bf84-d9ca-414a-a9e4-90301e031549"

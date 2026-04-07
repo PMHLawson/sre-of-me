@@ -1,0 +1,8 @@
+# Secrets for local development - copy to .dev.vars and fill in real values
+# DO NOT commit .dev.vars to git
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+JIRA_API_TOKEN=
+JIRA_EMAIL=
+WEBHOOK_SHARED_SECRET=
+NOTION_API_KEY=

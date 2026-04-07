@@ -1,0 +1,186 @@
+// integrity-verifier/src/index.js
+// SRE-of-Me / SOMC-63 + .940 Section 8
+// Cron Worker: compares D1 event_log against Notion .943 mirror every 5 minutes.
+// Checks: count match, event ID set match, per-row hash match,
+//         D1 latest-hash recompute, D1 sequence gaps.
+// Creates an error event (in both D1 and Notion) if any check fails.
+
+async function sha256Hex(input) {
+  const buf = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(input)
+  );
+  return [...new Uint8Array(buf)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// Fetch all Notion mirror entries, returning a Map of event_id → hash
+async function fetchNotionMirror(env) {
+  const mirror = new Map();
+  let cursor = undefined;
+
+  while (true) {
+    const res = await fetch(`https://api.notion.com/v1/databases/${env.NOTION_EVENTS_DB_ID}/query`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.NOTION_API_TOKEN}`,
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(cursor ? { start_cursor: cursor, page_size: 100 } : { page_size: 100 }),
+    });
+
+    if (!res.ok) throw new Error(`Notion query failed: ${res.status} ${await res.text()}`);
+    const data = await res.json();
+
+    for (const page of data.results) {
+      const eventId = page.properties?.["Event"]?.title?.[0]?.text?.content ?? null;
+      const hash = page.properties?.["Hash"]?.rich_text?.[0]?.text?.content ?? null;
+      if (eventId) {
+        mirror.set(eventId, hash);
+      }
+    }
+
+    if (!data.has_more) break;
+    cursor = data.next_cursor;
+  }
+
+  return mirror;
+}
+
+async function createAlert(env, message) {
+  const prev = await env.DB.prepare("SELECT seq, hash FROM event_log ORDER BY seq DESC LIMIT 1").first();
+  const prev_hash = prev ? prev.hash : "GENESIS";
+  const event_id = crypto.randomUUID();
+  const timestamp = new Date().toISOString();
+  const actor = "integrity-verifier";
+  const target = "all";
+  const event_type = "error";
+  const parent_event_id = null;
+  const content = message;
+  const hashInput = [event_id, timestamp, actor, target, event_type, "", content, prev_hash].join("|");
+  const hash = await sha256Hex(hashInput);
+
+  const insert = await env.DB.prepare(
+    `INSERT INTO event_log (
+      event_id, timestamp, actor, target,
+      event_type, parent_event_id, content,
+      prev_hash, hash
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(event_id, timestamp, actor, target, event_type, parent_event_id, content, prev_hash, hash).run();
+
+  const seq = insert.meta?.last_row_id;
+  const event = await env.DB.prepare("SELECT * FROM event_log WHERE seq = ?").bind(seq).first();
+
+  await fetch("https://api.notion.com/v1/pages", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${env.NOTION_API_TOKEN}`,
+      "Notion-Version": "2022-06-28",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      parent: { database_id: env.NOTION_EVENTS_DB_ID },
+      properties: {
+        "Event": { title: [{ text: { content: event.event_id } }] },
+        "Seq": { number: event.seq },
+        "Timestamp": { rich_text: [{ text: { content: event.timestamp } }] },
+        "Actor": { rich_text: [{ text: { content: event.actor } }] },
+        "Target": { rich_text: [{ text: { content: event.target ?? "" } }] },
+        "Event Type": { select: { name: event.event_type } },
+        "Parent Event ID": { rich_text: [{ text: { content: event.parent_event_id ?? "" } }] },
+        "Content": { rich_text: [{ text: { content: event.content } }] },
+        "Prev Hash": { rich_text: [{ text: { content: event.prev_hash } }] },
+        "Hash": { rich_text: [{ text: { content: event.hash } }] }
+      }
+    })
+  });
+}
+
+async function runChecks(env) {
+  // Fetch both sides
+  const d1Rows = await env.DB.prepare("SELECT event_id, hash FROM event_log ORDER BY seq ASC").all();
+  const d1Events = d1Rows.results;
+  const notionMirror = await fetchNotionMirror(env);
+
+  // Check 1: Count match
+  if (d1Events.length !== notionMirror.size) {
+    return `Integrity failure: count mismatch D1=${d1Events.length} Notion=${notionMirror.size}`;
+  }
+
+  // Check 2: Event ID set match + per-row hash comparison
+  for (const row of d1Events) {
+    if (!notionMirror.has(row.event_id)) {
+      return `Integrity failure: D1 event ${row.event_id} missing from Notion mirror`;
+    }
+    const notionHash = notionMirror.get(row.event_id);
+    if (notionHash !== row.hash) {
+      return `Integrity failure: hash mismatch for event ${row.event_id} — D1=${row.hash} Notion=${notionHash}`;
+    }
+  }
+
+  // Check 3: Notion extras not in D1
+  const d1Ids = new Set(d1Events.map((r) => r.event_id));
+  for (const [notionId] of notionMirror) {
+    if (!d1Ids.has(notionId)) {
+      return `Integrity failure: Notion has event ${notionId} not found in D1`;
+    }
+  }
+
+  // Check 4: D1 latest-hash recompute (self-consistency)
+  const latest = await env.DB.prepare("SELECT * FROM event_log ORDER BY seq DESC LIMIT 1").first();
+  if (latest) {
+    const recomputed = await sha256Hex([
+      latest.event_id,
+      latest.timestamp,
+      latest.actor,
+      latest.target ?? "",
+      latest.event_type,
+      latest.parent_event_id ?? "",
+      latest.content,
+      latest.prev_hash,
+    ].join("|"));
+
+    if (recomputed !== latest.hash) {
+      return `Integrity failure: D1 latest hash recompute failed at seq=${latest.seq}`;
+    }
+  }
+
+  // Check 5: D1 sequence gaps
+  const seqRows = await env.DB.prepare("SELECT seq FROM event_log ORDER BY seq ASC").all();
+  const seqs = seqRows.results.map((r) => r.seq);
+  for (let i = 1; i < seqs.length; i++) {
+    if (seqs[i] !== seqs[i - 1] + 1) {
+      return `Integrity failure: sequence gap between ${seqs[i - 1]} and ${seqs[i]}`;
+    }
+  }
+
+  return null;
+}
+
+export default {
+  async scheduled(_controller, env, ctx) {
+    ctx.waitUntil((async () => {
+      // Circuit breaker: suppress repeated alerts within 1 hour
+      // Prevents cascade where each error event triggers another mismatch check
+      const recentAlert = await env.DB.prepare(
+        `SELECT timestamp FROM event_log
+         WHERE actor = 'integrity-verifier' AND event_type = 'error'
+         ORDER BY seq DESC LIMIT 1`
+      ).first();
+
+      if (recentAlert) {
+        const alertAge = Date.now() - new Date(recentAlert.timestamp).getTime();
+        if (alertAge < 3600000) { // 1 hour in milliseconds
+          return; // suppress — already alerted recently
+        }
+      }
+
+      const failure = await runChecks(env);
+      if (failure) {
+        await createAlert(env, failure);
+      }
+    })());
+  }
+};
